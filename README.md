@@ -77,3 +77,5 @@ But YMMV.
 ## Issues
 
 Let me know if there are any bugs by posting in issues.
+
+If you like this repo [buy me a coffee](https://paypal.me/NWaterton)
