@@ -8,7 +8,7 @@ uses:
 * websockets (pip install websockets)
 * aiohttp (pip install aiohttp)
 
-##usage
+## Usage
 
 ```bash
 nick@MotionPlus:~/Scripts/kuna_server$ ./kuna_server.py -h
