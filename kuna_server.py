@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#KUNA light rtsp server
+#KUNA light/camera rtsp server
 #Copywrite Nick Waterton 2025 n.waterton@outlook.com
 
 # N Waterton V 1.0.0 20th October 2025: initial release
@@ -548,7 +548,6 @@ def _get_ports(ask):
     """
     res = re.match(r'.+?\nTransport:[^\n]+client_port=(\d+)-(\d+)', ask, re.DOTALL)
     if not res:
-        #raise RuntimeError('invalid transport ports')
         return []
     return [int(res.group(1)), int(res.group(2))]
 
