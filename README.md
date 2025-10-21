@@ -14,7 +14,7 @@ uses:
 nick@MotionPlus:~/Scripts/kuna_server$ ./kuna_server.py -h
 usage: kuna_server.py [-h] [-p PORT] [-L LOG] [-D] username password
 
-Async Kuna Camera RTSP server: V:1.0.0
+Async Kuna Camera RTSP server: V:1.0.1
 
 positional arguments:
   username              username (default: None))
@@ -23,8 +23,9 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -p PORT, --port PORT  base RTSP server port to listen on (default: 4554)
-  -L LOG, --log LOG     log file name (default: ./KUNA.log)
+  -L LOG, --log LOG     log file name (default: None)
   -D, --debug           Debug mode (default: False))
+  -M, --minlog          Minnimum Logging (default: False))
 ```
 
 run: 
@@ -38,7 +39,7 @@ This will start a number of local servers - one for each camera you have in your
 2025-10-20 17:52:13,902  INFO Main       main                 *******************
 2025-10-20 17:52:13,903  INFO Main       main                 * Program Started *
 2025-10-20 17:52:13,903  INFO Main       main                 *******************
-2025-10-20 17:52:13,903  INFO Main       main                 ./kuna_server.py Version: 1.0.0
+2025-10-20 17:52:13,903  INFO Main       main                 ./kuna_server.py Version: 1.0.1
 2025-10-20 17:52:13,903  INFO Main       main                 Python Version: 3.12.3 (main, Aug 14 2025, 17:47:21) [GCC 13.3.0]
 2025-10-20 17:52:13,903 WARNI KUNA       load_token           token.json not found.
 2025-10-20 17:52:13,904  INFO KUNA       _request             POST https://server.kunasystems.com/api/v1/account/auth/
@@ -46,11 +47,11 @@ This will start a number of local servers - one for each camera you have in your
 2025-10-20 17:52:14,078  INFO KUNA       save_token           token saved
 2025-10-20 17:52:14,078  INFO KUNA       _request             GET https://server.kunasystems.com/api/v1/user/cameras/
 2025-10-20 17:52:14,277  INFO KUNA       start_rtsp_servers   rtsp server starting
-2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL008081601751 (Garden) on 0.0.0.0:4554
+2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL008081601751 (Garden) on 192.168.100.191:4554
 2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   rtsp server starting
-2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL005401503119 (Porch) on 0.0.0.0:4555
+2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL005401503119 (Porch) on 192.168.100.191:4555
 2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   rtsp server starting
-2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL005401500553 (Driveway) on 0.0.0.0:4556
+2025-10-20 17:52:14,278  INFO KUNA       start_rtsp_servers   Client: start listening for camera: OOKNBL005401500553 (Driveway) on 192.168.100.191:4556
 ```
 
 Now open an rtsp client using the local ip address and the port indicated for the camera you want to view using `stream2` (`stream1` works as well).  
@@ -59,9 +60,9 @@ VLC will open a UDP connection by default. You can open multiple viewers on each
 
 **NOTE:** You can change the base port number using the `-p` command line option if you have a conflict, the default is `4554`.
 
-## got2rtc
+## got2rtc/Frigate
 
-If you are using go2rtc, you may need to experiment, the TCP rtsp stream is a bit unreliable (it buffers quite a bit). I have tried the folowing config (substitute your own ip and ports):
+If you are using go2rtc or Frigate, you may need to experiment, the TCP rtsp stream is a bit unreliable (it buffers quite a bit). I have tried the folowing config (substitute your own ip and ports):
 ```yaml
 Kuna_porch:
   #NOTE: rtsp does work but is unreliable

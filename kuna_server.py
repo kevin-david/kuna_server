@@ -3,6 +3,7 @@
 #Copywrite Nick Waterton 2025 n.waterton@outlook.com
 
 # N Waterton V 1.0.0 20th October 2025: initial release
+# N Waterton V 1.0.1 21st October 2025: added -M option for minnimal logging, custom logger added
 
 import json
 import ssl, time, sys, socket, re
@@ -17,7 +18,7 @@ import binascii
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 def parseargs():
     # Add command line argument parsing
@@ -25,10 +26,37 @@ def parseargs():
     parser.add_argument('username', action="store", type=str, default=None, help='username (default: %(default)s))')
     parser.add_argument('password', action="store", type=str, default=None, help='password (default: %(default)s))')
     parser.add_argument('-p', '--port',action='store',type=int,default=4554,help='base RTSP server port to listen on (default: %(default)s)')
-    parser.add_argument('-L', '--log', default='./KUNA.log', help='log file name (default: %(default)s)')
+    parser.add_argument('-L', '--log', default=None, help='log file name (default: %(default)s)')
     parser.add_argument('-D','--debug', action='store_true', default=False, help='Debug mode (default: %(default)s))')
+    parser.add_argument('-M','--minlog', action='store_true', default=False, help='Minnimum Logging (default: %(default)s))')
     return parser.parse_args()
-
+    
+class MinLogger(logging.Logger):
+    '''
+    custom logger to minnimize logging
+    '''
+    def __init__(self, name, level=logging.NOTSET):
+        super().__init__(name, level)
+        self.skip=set()
+        
+    def _process_extra(self, extra, message):
+        skip = False
+        if extra.get('minlog', False):
+            skip = True
+        if extra.get('reset', False):
+            self.skip=set()
+        if extra.get('logonce', False):
+            if message in self.skip:
+                skip = True
+            self.skip.add(message)
+        return skip
+        
+    def info(self, message, *args, **kwargs):
+        if kwargs.get('extra'):
+            if self._process_extra(kwargs['extra'], message):
+                return
+        kwargs.setdefault("stacklevel", 2)
+        super().info(message, *args, **kwargs)
 
 class KUNA:
     
@@ -63,6 +91,22 @@ class KUNA:
                     asyncio.get_running_loop().add_signal_handler(getattr(signal, sig), quit)
         except Exception as e:
             self.log.warning('signal error {}'.format(e))
+            
+    def get_local_ip_address(self):
+        """
+        Retrieves the local IP address of the machine.
+        """
+        try:
+            # Create a socket object
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Connect to an external address (doesn't actually send data)
+            # This forces the socket to bind to a local interface and get its IP
+            s.connect(("8.8.8.8", 80))  # Google's public DNS server
+            local_ip_address = s.getsockname()[0]
+            s.close()
+            return local_ip_address
+        except Exception as e:
+            return f"Error getting local IP address: {e}"
             
     async def exit(self):
         self._exit = True
@@ -160,7 +204,7 @@ class KUNA:
             await self.get_cameras()
             for port, camera in self.cameras.items():
                 self.log.info("rtsp server starting")
-                host = '0.0.0.0'
+                host = self.get_local_ip_address() or '0.0.0.0'
                 self.log.info(f'Client: start listening for camera: {camera['id']} ({camera['name']}) on {host}:{port}')
                 server_handler = await self.create_server_handler(camera['id'], port)
                 server = await asyncio.start_server(server_handler, host, port)
@@ -183,6 +227,7 @@ class KunaWS:
         self.ws = None
         self.channel_id = None
         self.client = client
+        self.unknown_pt = set()
         # Configure expected payload types and mapping to UDP ports (PT -> port)
         self.mapping = {96: None, 98: None}    #video, audio
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -191,7 +236,7 @@ class KunaWS:
         
     def log_printable(self, txt):
         if txt.replace('\r\n','').isprintable():
-            self.log.info(f'{txt}')
+            self.log.info(f'{txt}', extra={'reset':True})
             return True
         return False
             
@@ -259,7 +304,7 @@ class KunaWS:
                 if await self.wait_for_channel_id():
                     if self.ws:
                         frame = self.make_frame(self.channel_id, data)
-                        self.log.info('sending to ws: {}'.format(binascii.hexlify(frame).decode('utf-8')))
+                        self.log.debug('sending to ws: {}'.format(binascii.hexlify(frame).decode('utf-8')))
                         await self.ws.send(frame)
                 else:
                     break
@@ -287,7 +332,7 @@ class KunaWS:
         decode header and return data up to size minus header
         '''
         packet_type = int.from_bytes( data[:4], byteorder="big")
-        self.log.info('Msg type: {}'.format(packet_type))
+        self.log.info('Msg type: {}'.format(packet_type), extra={'minlog':True})
         match packet_type:
             case 8:
                 #setup
@@ -362,12 +407,13 @@ class KunaWS:
         target_port = self.mapping.get(pt, None)
         if target_port is None:
             # if unknown PT, skip
-            self.log.warning(f"Unknown PT {pt} found; skipping packet")
+            self.log.info(f"Unknown PT {pt} found; skipping packet", extra={'logonce':True})
         else:
             # send raw RTP packet to UDP target (client host)
-            self.log.info("UDP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s:%d", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, target_port)
-            self.log.info('sending RTP packet to UDP port: {} ({})'.format(target_port, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown'))
-            self.udp_sock.sendto(data, (str(self.client.host), target_port))
+            self.log.info('Streaming UDP...', extra={'logonce':True})
+            self.log.info("UDP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s:%d", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, target_port, extra={'logonce':True})
+            self.log.info('sending RTP packet to UDP port: {} ({})'.format(target_port, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown'), extra={'logonce':True})
+            self.udp_sock.sendto(data, (self.client.host, target_port))
             
     async def send_to_tcp(self, data):
         '''
@@ -376,12 +422,13 @@ class KunaWS:
         hdr = self.parse_rtp_header(data[4:])
         pt = hdr['pt']
         if pt in self.mapping.keys():
-            self.log.info("TCP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s (%s)", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown')
+            self.log.info('Streaming TCP...', extra={'logonce':True})
+            self.log.info("TCP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s ({})".format('video' if pt == 96 else 'audio' if pt == 98 else 'unknown'), pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, extra={'logonce':True})
             #self.log.info('Raw Data')
             #hexdump(data)
             await self.client.write(data)
         else:
-            self.log.warning(f"Unknown PT {pt} found; skipping packet") 
+            self.log.info(f"Unknown PT {pt} found; skipping packet", extra={'logonce':True}) 
         
     async def send_connect_req(self):
         '''
@@ -416,7 +463,7 @@ class KunaWS:
                 try:
                     msg = await self.ws.recv()
                     if isinstance(msg, bytes):
-                        self.log.info('received: {} bytes of binary data'.format(len(msg)))
+                        self.log.info('received: {} bytes of binary data'.format(len(msg)), extra={'minlog':True})
                         packet_type, channel_id, channel_id2, size, data = self.decode_data(msg)
                         match packet_type:
                             case 4:     #TCP rdp/rdcp data
@@ -461,10 +508,11 @@ class rtsp_server:
         self.log = logging.getLogger(self.__class__.__name__)
         self.reader = reader
         self.writer = writer
-        self.peername = writer.get_extra_info('peername')
-        self.host = self.peername[0]
-        self.tcp_port = self.peername[1]
-        self.log.info(f'Client: new connection from {self.host}:{self.tcp_port}')
+        peername = writer.get_extra_info('peername')
+        self.host = peername[0]
+        self.tcp_port = peername[1]
+        self.peername=f'{self.host}:{self.tcp_port}'
+        self.log.info(f'Client: new connection from {self.peername}')
         self.log = logging.getLogger(self.__class__.__name__+f'[{self.peername}]')
         
     async def read(self, numbytes=2048):
@@ -485,7 +533,7 @@ class rtsp_server:
             return None
         #self.log.info('Sending to client: {}'.format(binascii.hexlify(frame).decode('ascii')))
         #self.log.info('Sending to client (as text): {}'.format(frame.decode('ascii', errors='ignore')))
-        self.log.info('sending {} bytes to client'.format(len(frame)))
+        self.log.debug('sending {} bytes to client'.format(len(frame)))
         self.writer.write(frame)
         await self.writer.drain()
 
@@ -552,8 +600,10 @@ def _get_ports(ask):
     return [int(res.group(1)), int(res.group(2))]
 
 
-def setup_logger(log_file, log_level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'):
+def setup_logger(log_file, log_level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', minlog=False):
     try:
+        if minlog and not log_level==logging.DEBUG:
+            logging.setLoggerClass(MinLogger)
         # Change root logger level from WARNING (default) to our desired level
         logging.getLogger('').setLevel(log_level)
         logging.basicConfig(format=format, level=log_level, force=True)
@@ -573,7 +623,8 @@ async def main():
     args = parseargs()
     setup_logger(args.log,
                  logging.DEBUG if args.debug else logging.INFO,
-                 '%(asctime)s %(levelname)5.5s %(name)-10s %(funcName)-20s %(message)s')
+                 '%(asctime)s %(levelname)5.5s %(name)-10s %(funcName)-20s %(message)s',
+                 args.minlog)
                  
     log = logging.getLogger('Main')
                  
@@ -587,8 +638,7 @@ async def main():
     
     k = KUNA(args.username,
              args.password,
-             args.port
-             )
+             args.port)
              
     await k.start_rtsp_servers()
     
