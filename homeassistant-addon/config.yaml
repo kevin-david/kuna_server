@@ -1,0 +1,42 @@
+name: Kuna Camera RTSP Server
+description: RTSP server for Kuna cameras to enable live video streaming
+version: "0.0.1"
+slug: kuna_server
+image: ghcr.io/kevin-david/kuna_server-homeassistant
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - i386
+  - armv7
+startup: services
+ports:
+  "4554/tcp": 4554
+  "4555/tcp": 4555
+  "4556/tcp": 4556
+  "4557/tcp": 4557
+  "4554/udp": 4554
+  "4555/udp": 4555
+  "4556/udp": 4556
+  "4557/udp": 4557
+homeassistant: "2023.1.0"
+map:
+  - config:rw
+options:
+  username: ""
+  password: ""
+  port: 4554
+  debug: false
+  minlog: false
+schema:
+  username: "str"
+  password: "str"
+  port: "int(1,65535)?"
+  debug: "bool?"
+  minlog: "bool?"
+environment:
+  KUNA_USERNAME: !secret kuna_username
+  KUNA_PASSWORD: !secret kuna_password
+  KUNA_PORT: !option port
+  KUNA_DEBUG: !option debug
+  KUNA_MINLOG: !option minlog

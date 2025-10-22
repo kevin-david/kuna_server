@@ -1,0 +1,18 @@
+services:
+  kuna_server:
+    build: .
+    container_name: kuna_server
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "4554-4560:4554-4560"
+    volumes:
+      - ./config:/config
+      - ./logs:/app/logs
+    networks:
+      - kuna_network
+
+networks:
+  kuna_network:
+    driver: bridge
