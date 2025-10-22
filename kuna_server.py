@@ -15,6 +15,7 @@ import signal
 import logging
 from logging.handlers import RotatingFileHandler
 import binascii
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -23,13 +24,33 @@ __version__ = "1.0.1"
 def parseargs():
     # Add command line argument parsing
     parser = argparse.ArgumentParser(description='Async Kuna Camera RTSP server: V:{}'.format(__version__))
-    parser.add_argument('username', action="store", type=str, default=None, help='username (default: %(default)s))')
-    parser.add_argument('password', action="store", type=str, default=None, help='password (default: %(default)s))')
-    parser.add_argument('-p', '--port',action='store',type=int,default=4554,help='base RTSP server port to listen on (default: %(default)s)')
+    
+    # Get defaults from environment variables
+    default_username = os.getenv('KUNA_USERNAME')
+    default_password = os.getenv('KUNA_PASSWORD')
+    default_port = int(os.getenv('KUNA_PORT') or '4554')
+    default_debug = (os.getenv('KUNA_DEBUG') or 'false').lower() == 'true'
+    default_minlog = (os.getenv('KUNA_MINLOG') or 'false').lower() == 'true'
+    
+    parser.add_argument('username', action="store", type=str, default=default_username, nargs='?',
+                       help='username (default: from KUNA_USERNAME env var)')
+    parser.add_argument('password', action="store", type=str, default=default_password, nargs='?',
+                       help='password (default: from KUNA_PASSWORD env var)')
+    parser.add_argument('-p', '--port',action='store',type=int,default=default_port,
+                       help='base RTSP server port to listen on (default: %(default)s)')
     parser.add_argument('-L', '--log', default=None, help='log file name (default: %(default)s)')
-    parser.add_argument('-D','--debug', action='store_true', default=False, help='Debug mode (default: %(default)s))')
-    parser.add_argument('-M','--minlog', action='store_true', default=False, help='Minnimum Logging (default: %(default)s))')
-    return parser.parse_args()
+    parser.add_argument('-D','--debug', action='store_true', default=default_debug, 
+                       help='Debug mode (default: %(default)s))')
+    parser.add_argument('-M','--minlog', action='store_true', default=default_minlog, 
+                       help='Minnimum Logging (default: %(default)s))')
+    
+    args = parser.parse_args()
+    
+    # Validate that we have credentials either from args or environment
+    if not args.username or not args.password:
+        parser.error("username and password are required (provide as arguments or set KUNA_USERNAME and KUNA_PASSWORD environment variables)")
+    
+    return args
     
 class MinLogger(logging.Logger):
     '''
@@ -65,7 +86,7 @@ class KUNA:
     CAMERAS_ENDPOINT = "user/cameras/"
     USER_AGENT = "Kuna/2.4.4 (iPhone; iOS 12.1; Scale/3.00)"
     
-    def __init__(self, login, password, port=4554):
+    def __init__(self, login, password, port):
         self.log = logging.getLogger(self.__class__.__name__)
         self.login = login
         self.password = password
@@ -76,7 +97,9 @@ class KUNA:
         self.servers = []
         self.start = time.time()
         self._add_signals()
-        self.filename = 'token.json'
+        # Use config directory for token storage in addon environment
+        config_dir = os.getenv('CONFIG_DIR', '.')
+        self.filename = os.path.join(config_dir, 'kuna-server-token.json')
         self.load_token()
         
     def _add_signals(self):
