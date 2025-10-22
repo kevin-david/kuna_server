@@ -1,38 +1,38 @@
-#!/bin/bash
-# Home Assistant Addon Runner for Kuna Server
-
+#!/usr/bin/with-contenv bashio
+# shellcheck shell=bash
 set -e
 
-# Setup environment for Home Assistant addon
-CONFIG_DIR=${CONFIG_DIR:-/config}
-LOG_LEVEL=${KUNA_DEBUG:-false}
-
 # Create config directory if it doesn't exist
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$(bashio::config 'config_dir')"
 
-# Setup logging
-if [ "$LOG_LEVEL" = "true" ]; then
-    LOG_LEVEL="DEBUG"
-else
-    LOG_LEVEL="INFO"
-fi
+# Read configuration using bashio and export directly
+export KUNA_USERNAME=$(bashio::config 'username')
+export KUNA_PASSWORD=$(bashio::config 'password')
+export KUNA_PORT=$(bashio::config 'port')
+export KUNA_DEBUG=$(bashio::config 'debug')
+export KUNA_MINLOG=$(bashio::config 'minlog')
+export CONFIG_DIR="$(bashio::config 'config_dir')"
 
-# Validate required environment variables
+# Validate required options
 if [ -z "$KUNA_USERNAME" ] || [ -z "$KUNA_PASSWORD" ]; then
-    echo "ERROR: KUNA_USERNAME and KUNA_PASSWORD environment variables are required"
+    bashio::log.error "username and password are required in addon options"
     exit 1
 fi
 
-# Log startup information
-echo "Starting Kuna Server Addon"
-echo "Config directory: $CONFIG_DIR"
-echo "Username: $KUNA_USERNAME"
-echo "Port: ${KUNA_PORT}"
-echo "Debug: ${KUNA_DEBUG:-false}"
-echo "Minimal Logging: ${KUNA_MINLOG:-false}"
+# Setup logging
+if [ "$KUNA_DEBUG" = "true" ]; then
+    export LOG_LEVEL="DEBUG"
+else
+    export LOG_LEVEL="INFO"
+fi
 
-# Set config directory environment variable for the Python script
-export CONFIG_DIR
+# Log startup information
+bashio::log.info "Starting Kuna Server Addon"
+bashio::log.info "Config directory: $CONFIG_DIR"
+bashio::log.info "Username: $KUNA_USERNAME"
+bashio::log.info "Port: $KUNA_PORT"
+bashio::log.info "Debug: $KUNA_DEBUG"
+bashio::log.info "Minimal Logging: $KUNA_MINLOG"
 
 # Run the main application
 exec python3 kuna_server.py

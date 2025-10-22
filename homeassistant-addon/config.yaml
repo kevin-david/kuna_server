@@ -1,6 +1,6 @@
 name: Kuna Camera RTSP Server
 description: RTSP server for Kuna cameras to enable live video streaming
-version: "0.0.1"
+version: "0.0.2"
 slug: kuna_server
 image: ghcr.io/kevin-david/kuna_server-homeassistant
 arch:
@@ -34,9 +34,3 @@ schema:
   port: "int(1,65535)?"
   debug: "bool?"
   minlog: "bool?"
-environment:
-  KUNA_USERNAME: !secret kuna_username
-  KUNA_PASSWORD: !secret kuna_password
-  KUNA_PORT: !option port
-  KUNA_DEBUG: !option debug
-  KUNA_MINLOG: !option minlog
