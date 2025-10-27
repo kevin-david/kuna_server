@@ -1,8 +1,7 @@
 name: Kuna Camera RTSP Server
 description: RTSP server for Kuna cameras to enable live video streaming
-version: "0.0.2"
+version: "0.0.3"
 slug: kuna_server
-image: ghcr.io/kevin-david/kuna_server-homeassistant
 arch:
   - aarch64
   - amd64

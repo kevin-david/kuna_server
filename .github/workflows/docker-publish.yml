@@ -56,14 +56,9 @@ jobs:
           org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
 
     - name: Build and push addon image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./homeassistant-addon
-        push: true
-        tags: |
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:${{ steps.tag.outputs.tag }}
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:latest
-        labels: |
-          org.opencontainers.image.title=Kuna Server Home Assistant Addon
-          org.opencontainers.image.description=RTSP server for Kuna cameras in Home Assistant
-          org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+      run: |
+        ./build-addon.sh
+        docker tag kuna_server-homeassistant ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:${{ steps.tag.outputs.tag }}
+        docker tag kuna_server-homeassistant ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:latest
+        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:${{ steps.tag.outputs.tag }}
+        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-homeassistant:latest

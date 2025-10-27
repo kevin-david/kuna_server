@@ -212,3 +212,7 @@ __marimo__/
 
 # Environment files
 .env
+
+# Home Assistant addon temporary files
+homeassistant-addon/kuna_server.py
+homeassistant-addon/requirements.txt

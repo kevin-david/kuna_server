@@ -3,7 +3,7 @@
 set -e
 
 # Create config directory if it doesn't exist
-mkdir -p "$(bashio::config 'config_dir')"
+mkdir -p "${CONFIG_DIR:-/config}"
 
 # Read configuration using bashio and export directly
 export KUNA_USERNAME=$(bashio::config 'username')
@@ -11,7 +11,7 @@ export KUNA_PASSWORD=$(bashio::config 'password')
 export KUNA_PORT=$(bashio::config 'port')
 export KUNA_DEBUG=$(bashio::config 'debug')
 export KUNA_MINLOG=$(bashio::config 'minlog')
-export CONFIG_DIR="$(bashio::config 'config_dir')"
+export CONFIG_DIR="${CONFIG_DIR:-/config}"
 
 # Validate required options
 if [ -z "$KUNA_USERNAME" ] || [ -z "$KUNA_PASSWORD" ]; then
@@ -35,4 +35,4 @@ bashio::log.info "Debug: $KUNA_DEBUG"
 bashio::log.info "Minimal Logging: $KUNA_MINLOG"
 
 # Run the main application
-exec python3 kuna_server.py
+exec python3 /app/kuna_server.py
