@@ -32,7 +32,7 @@ mv "$ADDON_DIR/requirements.txt.tmp" "$ADDON_DIR/requirements.txt"
 
 # Build the addon
 echo "Building Docker image..."
-docker build -t kuna_server-homeassistant "$ADDON_DIR/"
+docker build --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:latest -t kuna_server-homeassistant "$ADDON_DIR/"
 
 # Clean up copied files
 echo "Cleaning up temporary files..."
