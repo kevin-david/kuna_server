@@ -227,7 +227,8 @@ class KUNA:
             await self.get_cameras()
             for port, camera in self.cameras.items():
                 self.log.info("rtsp server starting")
-                host = self.get_local_ip_address() or '0.0.0.0'
+                # For Home Assistant addons, always bind to 0.0.0.0 to accept external connections
+                host = '0.0.0.0'
                 self.log.info(f"Client: start listening for camera: {camera['id']} ({camera['name']}) on {host}:{port}")
                 server_handler = await self.create_server_handler(camera['id'], port)
                 server = await asyncio.start_server(server_handler, host, port)
