@@ -1,6 +1,6 @@
 name: Kuna Camera RTSP Server
 description: RTSP server for Kuna cameras to enable live video streaming
-version: "0.0.14"
+version: "0.0.15"
 slug: kuna_server
 arch:
   - aarch64
@@ -11,14 +11,14 @@ arch:
 startup: services
 init: false
 ports:
-  "4554/tcp": 4554
-  "4555/tcp": 4555
-  "4556/tcp": 4556
-  "4557/tcp": 4557
-  "4554/udp": 4554
-  "4555/udp": 4555
-  "4556/udp": 4556
-  "4557/udp": 4557
+  "4554/tcp": null
+  "4555/tcp": null
+  "4556/tcp": null
+  "4557/tcp": null
+  "4554/udp": null
+  "4555/udp": null
+  "4556/udp": null
+  "4557/udp": null
 homeassistant: "2023.1.0"
 map:
   - config:rw
