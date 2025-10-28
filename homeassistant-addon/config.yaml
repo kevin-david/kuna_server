@@ -1,6 +1,6 @@
 name: Kuna Camera RTSP Server
 description: RTSP server for Kuna cameras to enable live video streaming
-version: "0.0.3"
+version: "0.0.4"
 slug: kuna_server
 arch:
   - aarch64
