@@ -4,7 +4,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:latest
 FROM $BUILD_FROM
 
 # Install pip if not available (for HA builds that override BUILD_FROM)
-RUN apk add --no-cache python3 py3-pip || true
+RUN apk add --no-cache python3 py3-pip || (apt-get update && apt-get install -y python3-pip) || true
 
 # Copy the application files
 COPY kuna_server.py /app/
