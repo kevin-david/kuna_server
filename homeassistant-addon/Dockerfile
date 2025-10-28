@@ -3,13 +3,10 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:latest
 FROM $BUILD_FROM
 
-# Install pip if not available
-RUN apk add --no-cache python3 py3-pip || apt-get update && apt-get install -y python3-pip || true
-
 # Copy the application files
 COPY kuna_server.py /app/
 COPY requirements.txt /app/
-RUN python3 -m pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy and setup run script
 COPY run.sh /
