@@ -9,7 +9,7 @@ RUN apk add --no-cache python3 py3-pip || (apt-get update && apt-get install -y 
 # Copy the application files
 COPY kuna_server.py /app/
 COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
 # Copy and setup run script
 COPY run.sh /
