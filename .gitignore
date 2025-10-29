@@ -209,3 +209,6 @@ __marimo__/
 #kuna_server
 *.log*
 *.json
+
+# Environment files
+.env

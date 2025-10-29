@@ -1,0 +1,43 @@
+name: Check Synced Files
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build
+      run: ./build-addon.sh
+
+    - name: Check for git changes
+      run: |
+        # Check if there are any changes in the addon directory
+        CHANGED_FILES=$(git status --porcelain homeassistant-addon/)
+        
+        if [ -n "$CHANGED_FILES" ]; then
+          echo "❌ ERROR: Generated addon files have uncommitted changes"
+          echo ""
+          echo "The following files in homeassistant-addon/ were modified after build:"
+          echo "$CHANGED_FILES"
+          echo ""
+          echo "This indicates the addon files are out of sync with the root directory files."
+          echo "Run ./build-addon.sh locally and commit the updated files."
+          echo ""
+          echo "Git diff:"
+          git diff homeassistant-addon/
+          exit 1
+        fi
+        
+        echo "✅ All addon files are synced (no git changes detected)"
+

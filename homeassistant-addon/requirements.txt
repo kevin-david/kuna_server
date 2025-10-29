@@ -1,0 +1,7 @@
+# AUTO-COPIED FILE - DO NOT EDIT MANUALLY
+# This file is copied from the root directory during build
+# Edit the original file: ../requirements.txt
+
+aiohttp>=3.12.15
+websockets>=15.0.1
+python-dotenv>=1.0.0
