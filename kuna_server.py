@@ -6,6 +6,8 @@
 # N Waterton V 1.0.1 21st October 2025: added -M option for minnimal logging, custom logger added
 
 import json
+from random import choices
+import string
 import ssl, time, sys, socket, re
 import argparse
 import websockets
@@ -193,7 +195,9 @@ class KUNA:
             This callback function will be called as a task every time a connection to the server is made
             '''
             await self.check_token()
-            KunaWS(camera, port=port, token=self.token, client=rtsp_server(reader, writer))
+            client = rtsp_server(reader, writer)
+            self.log.info('New RTSP connection for camera %s from %s', camera, client.peername)
+            KunaWS(camera, port=port, token=self.token, client=client)
         return handler
         
     async def start_rtsp_servers(self):
@@ -332,7 +336,7 @@ class KunaWS:
         decode header and return data up to size minus header
         '''
         packet_type = int.from_bytes( data[:4], byteorder="big")
-        self.log.info('Msg type: {}'.format(packet_type), extra={'minlog':True})
+        self.log.debug(f'Msg type: {packet_type}', extra={'minlog':True})
         match packet_type:
             case 8:
                 #setup
@@ -407,12 +411,12 @@ class KunaWS:
         target_port = self.mapping.get(pt, None)
         if target_port is None:
             # if unknown PT, skip
-            self.log.info(f"Unknown PT {pt} found; skipping packet", extra={'logonce':True})
+            self.log.debug("Unknown PT %d found; skipping packet", pt, extra={'logonce':True})
         else:
             # send raw RTP packet to UDP target (client host)
-            self.log.info('Streaming UDP...', extra={'logonce':True})
-            self.log.info("UDP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s:%d", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, target_port, extra={'logonce':True})
-            self.log.info('sending RTP packet to UDP port: {} ({})'.format(target_port, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown'), extra={'logonce':True})
+            self.log.debug('Streaming UDP...', extra={'logonce':True})
+            self.log.debug("UDP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s:%d", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, target_port, extra={'logonce':True})
+            self.log.debug('sending RTP packet to UDP port: %d (%s)', target_port, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown', extra={'logonce':True})
             self.udp_sock.sendto(data, (self.client.host, target_port))
             
     async def send_to_tcp(self, data):
@@ -422,13 +426,12 @@ class KunaWS:
         hdr = self.parse_rtp_header(data[4:])
         pt = hdr['pt']
         if pt in self.mapping.keys():
-            self.log.info('Streaming TCP...', extra={'logonce':True})
-            self.log.info("TCP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s ({})".format('video' if pt == 96 else 'audio' if pt == 98 else 'unknown'), pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, extra={'logonce':True})
+            self.log.debug("TCP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s (%s)", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown', extra={'logonce':True})
             #self.log.info('Raw Data')
             #hexdump(data)
             await self.client.write(data)
         else:
-            self.log.info(f"Unknown PT {pt} found; skipping packet", extra={'logonce':True}) 
+            self.log.debug("Unknown PT %d found; skipping packet", pt, extra={'logonce':True}) 
         
     async def send_connect_req(self):
         '''
@@ -442,15 +445,15 @@ class KunaWS:
                 + self.string_message(self.camera)  # Camera ID (porch)
                 + self.string_message(self.token)  # Auth Token
             )
-            self.log.info('sending connection request for camera:{} with token: {}'.format(self.camera, self.token))
-            self.log.info("Sending header `{}`".format(header))
+            self.log.debug('sending connection request for camera:%s with token: %s', self.camera, self.token)
+            self.log.debug("Sending header `%s`", header)
             await self.ws.send(header)
         else:
             self.log.error('no ws')
         
     async def kuna_ws_connect(self):
         ws_url = f"{self.ws_url}{self.token}"
-        self.log.info('Connecting to: {}'.format(ws_url))
+        self.log.info('Connecting to Kuna WS: %s', ws_url)
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -463,7 +466,7 @@ class KunaWS:
                 try:
                     msg = await self.ws.recv()
                     if isinstance(msg, bytes):
-                        self.log.info('received: {} bytes of binary data'.format(len(msg)), extra={'minlog':True})
+                        self.log.debug('received: %d bytes of binary data', len(msg))
                         packet_type, channel_id, channel_id2, size, data = self.decode_data(msg)
                         match packet_type:
                             case 4:     #TCP rdp/rdcp data
@@ -489,18 +492,21 @@ class KunaWS:
                                 self.log_printable(data.decode('utf-8', errors='replace'))
                                     
                                     
-                    elif isinstance(message, str):
+                    elif isinstance(msg, str):
                         self.log.info(msg)
                         
                 except websockets.exceptions.ConnectionClosedOK:
                     self.log.warning('Websocket closed normally')
                     break
-                        
+                except asyncio.CancelledError:
+                    self.log.info('Websocket connection cancelled')
+                    break
                 except Exception as e:
                     self.log.exception('WS error: {}'.format(e))
                     break
         self.ws = None
         self.channel_id = None
+        self._ws_connect_task = None
     
                     
 class rtsp_server:
@@ -603,7 +609,8 @@ def _get_ports(ask):
 def setup_logger(log_file, log_level, log_format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', minlog=False):
     """Set up logging with rotation. If minlog is True, use stdout only and set level to WARNING."""
     # Change root logger level from WARNING (default) to our desired level
-    root_logger = logging.getLogger('').setLevel(log_level)
+    root_logger = logging.getLogger('')
+    root_logger.setLevel(log_level)
     
     # Create handler: file with rotation if log_file specified and minlog is False, otherwise stdout
     if log_file and not minlog:
@@ -646,6 +653,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        logging.info('Caught main exception:',e)
+        logging.info('Caught main exception: %s', e)
         sys.exit(1)
     
