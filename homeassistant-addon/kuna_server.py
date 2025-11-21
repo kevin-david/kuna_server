@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-__version__ = "1.0.1"
+__version__ = "0.1.4"
 
 def parseargs():
     # Add command line argument parsing
@@ -76,6 +76,7 @@ class KUNA:
         self.cameras = {}
         self.port = port
         self.token = None
+        self.token_time = None  # Track when token was saved
         self._exit = False
         self.servers = []
         self.start = time.time()
@@ -124,10 +125,14 @@ class KUNA:
         try:
             with open(self.filename, 'r') as file:
                 data = json.load(file)
-                age = time.time() - data.get('time', time.time())
+                token_save_time = data.get('time', time.time())
+                age = time.time() - token_save_time
                 if age < 86400:   # if token in file is less than 1 day old
                     self.token = data.get('token')
+                    self.token_time = token_save_time
                     self.log.info('got token: {}, age: {} mins'.format(self.token, age//60))
+                else:
+                    self.log.info('Token in file is expired (age: {} mins), will fetch new one'.format(age//60))
         except FileNotFoundError:
             self.log.warning("{} not found.".format(self.filename))
         except json.JSONDecodeError:
@@ -135,28 +140,56 @@ class KUNA:
         
     def save_token(self):
         if self.token:
-            data = {'token':self.token, 'time':time.time()}
+            self.token_time = time.time()
+            data = {'token':self.token, 'time':self.token_time}
             with open(self.filename, 'w') as json_file:
                 json.dump(data, json_file)
                 self.log.info('token saved')
                 
     async def check_token(self):
-        if not self.token or (time.time() - self.start > 86400):  #get token at least once a day
+        '''
+        Check if token exists and is valid. Refresh if missing or expired.
+        '''
+        # Check if token is expired (older than 1 day)
+        if self.token_time:
+            age = time.time() - self.token_time
+            if age >= 86400:  # Token is 1 day or older
+                self.log.info('Token expired (age: {} mins), refreshing...'.format(age//60))
+                self.token = None
+        
+        if not self.token:
             await self.get_token()
         
     async def get_token(self):
         '''
-        get kuna token from api
+        Get kuna token from API.
+        Returns True if successful, False otherwise.
         '''
         body = {"email": self.login, "password": self.password}
-        json_data = await self._request('POST', self.AUTH_ENDPOINT, body)
-        self.token = json_data.get("token")
-        if self.token:
-            # NOTE: getting the token has rate limits on it, so save the token locally
-            self.log.info('got new token: {}'.format(self.token))
-            self.save_token()
-        else:
-            self.log.error("Unable to obtain Kuna token: {}".format(json_data))
+        
+        try:
+            json_data = await self._request('POST', self.AUTH_ENDPOINT, body, retry_on_auth_error=False)
+            
+            token = json_data.get("token")
+            if token:
+                self.token = token
+                self.log.info('Got new token')
+                self.save_token()
+                return True
+            
+            # Extract error message
+            error_msg = json_data.get('non_field_errors', [])
+            if error_msg:
+                error_msg = '; '.join(error_msg)
+            else:
+                error_msg = json_data.get('error', json_data.get('message', 'Unknown error'))
+            
+            self.log.error("Failed to get token: {}".format(error_msg))
+            return False
+            
+        except Exception as e:
+            self.log.error("Error getting token: {}".format(e))
+            return False
         
     async def get_cameras(self):
         '''
@@ -170,28 +203,65 @@ class KUNA:
         else:
             self.log.error("Unable to obtain Kuna camera list: {}".format(json_data))
         
-    async def _request(self, method='POST', url=None, body=None):
+    async def _request(self, method='POST', url=None, body=None, retry_on_auth_error=True):
         '''
-        kuna api request
+        Make API request to Kuna server.
+        Returns dict with response data, or dict with error info on failure.
         '''
         if url != self.AUTH_ENDPOINT:
             await self.check_token()
+        
         headers = {"User-Agent": self.USER_AGENT, "Content-Type": "application/json"}
-        url = f"{self.API_URL}{url}"
+        full_url = f"{self.API_URL}{url}"
         if self.token:
             headers["Authorization"] = "Token {}".format(self.token)
-        self.log.info('{} {}'.format(method, url))
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, json=body) as resp:
-                # Check the HTTP status code
-                self.log.debug(f"Status: {resp.status}")
-                if resp.status == 200:
-                    json_data = await resp.json()
-                    self.log.debug("got: {}".format(json_data))
-                    return json_data
-                else:
-                    self.log.error("Unable to connect to api {}: {}".format(url, resp.status))
-        return {}
+        
+        self.log.info('{} {}'.format(method, full_url))
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, full_url, headers=headers, json=body, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    self.log.debug(f"Status: {resp.status}")
+                    
+                    if resp.status == 200:
+                        return await resp.json()
+                    
+                    # Get error details
+                    try:
+                        error_data = await resp.json()
+                    except:
+                        error_data = {"status": resp.status, "reason": resp.reason}
+                    
+                    # Handle authentication errors
+                    if resp.status in (401, 403):
+                        if retry_on_auth_error and url != self.AUTH_ENDPOINT:
+                            # Try refreshing token once
+                            self.log.warning("Authentication error, refreshing token...")
+                            if await self.get_token():
+                                return await self._request(method, url, body, retry_on_auth_error=False)
+                            else:
+                                self.log.error("Failed to refresh token")
+                        else:
+                            # Clear invalid token
+                            if url != self.AUTH_ENDPOINT:
+                                self.token = None
+                                self.token_time = None
+                        self.log.error("Authentication error: {}".format(error_data))
+                        return error_data
+                    
+                    # Other errors
+                    self.log.error("API error ({}): {}".format(resp.status, error_data))
+                    return error_data
+                    
+        except asyncio.TimeoutError:
+            self.log.error("Request timeout: {} {}".format(method, full_url))
+            return {"error": "Request timeout"}
+        except aiohttp.ClientError as e:
+            self.log.error("Network error: {} {}".format(method, full_url))
+            return {"error": str(e)}
+        except Exception as e:
+            self.log.exception("Unexpected error: {} {}".format(method, full_url))
+            return {"error": str(e)}
         
     async def create_server_handler(self, camera, port):
         async def handler(reader, writer):
@@ -199,9 +269,19 @@ class KUNA:
             This callback function will be called as a task every time a connection to the server is made
             '''
             await self.check_token()
+            if not self.token:
+                self.log.error('Cannot create WebSocket connection: token is None after check_token()')
+                self.log.error('Root cause: Failed to authenticate. Check your credentials (username/password) and network connectivity.')
+                # Close the connection gracefully
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except:
+                    pass
+                return
             client = rtsp_server(reader, writer)
             self.log.info('New RTSP connection for camera %s from %s', camera, client.peername)
-            KunaWS(camera, port=port, token=self.token, client=client)
+            KunaWS(camera, port=port, token=self.token, client=client, kuna_instance=self)
         return handler
         
     async def start_rtsp_servers(self):
@@ -209,6 +289,16 @@ class KUNA:
         One listener per camera for all clients
         '''
         try:
+            # Ensure we have a valid token before starting servers
+            await self.check_token()
+            if not self.token:
+                self.log.error("Cannot start RTSP servers: No valid authentication token")
+                self.log.error("Root cause: Failed to authenticate with Kuna API. Please check:")
+                self.log.error("  1. Username and password are correct")
+                self.log.error("  2. Network connectivity to server.kunasystems.com")
+                self.log.error("  3. API service is available")
+                raise RuntimeError("Authentication failed: Cannot obtain token from Kuna API")
+            
             await self.get_cameras()
             for port, camera in self.cameras.items():
                 self.log.info("rtsp server starting")
@@ -225,12 +315,13 @@ class KunaWS:
     
     ws_url = "wss://server.kunasystems.com/ws/rtsp/proxy?authtoken="    #or video.kunasystems.com
     
-    def __init__(self, camera, port, token, client):
+    def __init__(self, camera, port, token, client, kuna_instance=None):
         self.log = logging.getLogger(self.__class__.__name__+f'[{client.peername}][{camera}]')
         self.debug = self.log.getEffectiveLevel() == logging.DEBUG
         self.camera = camera
         self.port = port
         self.token = token
+        self.kuna_instance = kuna_instance  # Reference to KUNA instance for token refresh
         self._exit = False
         self.ws = None
         self.channel_id = None
@@ -281,6 +372,10 @@ class KunaWS:
             self.log.info("waiting for channel id")
             await asyncio.sleep(1)
             if (count:=count+1) % 10 == 0 and self.ws:
+                # Refresh token before retrying connection request
+                if self.kuna_instance:
+                    await self.kuna_instance.check_token()
+                    self.token = self.kuna_instance.token
                 await self.send_connect_req()
             if count > 20:
                 self.log.warning('Aborting')
@@ -385,6 +480,8 @@ class KunaWS:
         return packet_type, channel_id, channel_id2, size, data
         
     def string_message(self, message):
+        if message is None:
+            raise ValueError("Cannot encode None message")
         return self.four_bytes(len(message)) + message.encode('utf-8')
 
     def four_bytes(self, num):
@@ -442,20 +539,34 @@ class KunaWS:
         send connection request to ws
         '''
         self.channel_id = None
-        if self.ws:
-            header = (
-                self.four_bytes(7)  # packet type
-                + self.four_bytes(1) # unknown
-                + self.string_message(self.camera)  # Camera ID (porch)
-                + self.string_message(self.token)  # Auth Token
-            )
-            self.log.debug('sending connection request for camera:%s with token: %s', self.camera, self.token)
-            self.log.debug("Sending header `%s`", header)
-            await self.ws.send(header)
-        else:
+        if not self.ws:
             self.log.error('no ws')
+            return
+        # Refresh token if needed
+        if self.kuna_instance:
+            await self.kuna_instance.check_token()
+            self.token = self.kuna_instance.token
+        if not self.token:
+            self.log.error('Cannot send connect request: token is None')
+            return
+        header = (
+            self.four_bytes(7)  # packet type
+            + self.four_bytes(1) # unknown
+            + self.string_message(self.camera)  # Camera ID (porch)
+            + self.string_message(self.token)  # Auth Token
+        )
+        self.log.debug('sending connection request for camera:%s with token: %s', self.camera, self.token)
+        self.log.debug("Sending header `%s`", header)
+        await self.ws.send(header)
         
     async def kuna_ws_connect(self):
+        # Refresh token if needed before connecting
+        if self.kuna_instance:
+            await self.kuna_instance.check_token()
+            self.token = self.kuna_instance.token
+        if not self.token:
+            self.log.error('Cannot connect to WebSocket: token is None')
+            return
         ws_url = f"{self.ws_url}{self.token}"
         self.log.info('Connecting to Kuna WS: %s', ws_url)
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)

@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 def parseargs():
     # Add command line argument parsing
