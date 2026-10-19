@@ -23,7 +23,16 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
+
+# Preserve the existing setup budget while allowing the WebSocket handshake to
+# finish. A missing channel must eventually close the local RTSP connection.
+CHANNEL_SETUP_TIMEOUT = 21
+CLIENT_CLOSE_TIMEOUT = 5
+
+# The library's DEBUG handshake logs include the authenticated request path.
+WEBSOCKET_LOGGER = logging.getLogger('kuna_server.websocket')
+WEBSOCKET_LOGGER.setLevel(logging.INFO)
 
 def parseargs():
     # Add command line argument parsing
@@ -126,7 +135,7 @@ class KUNA:
                 if age < 86400:   # if token in file is less than 1 day old
                     self.token = data.get('token')
                     self.token_time = token_save_time
-                    self.log.info('got token: {}, age: {} mins'.format(self.token, age//60))
+                    self.log.info('Loaded cached token, age: %s mins', age // 60)
                 else:
                     self.log.info('Token in file is expired (age: {} mins), will fetch new one'.format(age//60))
         except FileNotFoundError:
@@ -277,7 +286,8 @@ class KUNA:
                 return
             client = rtsp_server(reader, writer)
             self.log.info('New RTSP connection for camera %s from %s', camera, client.peername)
-            KunaWS(camera, port=port, token=self.token, client=client, kuna_instance=self)
+            bridge = KunaWS(camera, port=port, token=self.token, client=client, kuna_instance=self)
+            await bridge.wait_closed()
         return handler
         
     async def start_rtsp_servers(self):
@@ -321,13 +331,16 @@ class KunaWS:
         self._exit = False
         self.ws = None
         self.channel_id = None
+        self._channel_ready = asyncio.Event()
+        self._close_lock = asyncio.Lock()
+        self._ws_connect_task = None
         self.client = client
         self.unknown_pt = set()
         # Configure expected payload types and mapping to UDP ports (PT -> port)
         self.mapping = {96: None, 98: None}    #video, audio
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.log.info('starting websocket for camera: {}'.format(camera))
-        asyncio.create_task(self._handle())
+        self._handler_task = asyncio.create_task(self._handle())
         
     def log_printable(self, txt):
         if txt.replace('\r\n','').isprintable():
@@ -336,15 +349,23 @@ class KunaWS:
         return False
             
     async def close_client(self):
-        self.connection_id = None
         await self.client.close()
             
     async def close(self):
-        self._exit = True
-        await self.close_client()
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
+        async with self._close_lock:
+            self._exit = True
+            self.udp_sock.close()
+            task = self._ws_connect_task
+            if task is not None and task is not asyncio.current_task():
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await self.close_client()
+        if self._handler_task is not asyncio.current_task():
+            await self.wait_closed()
+
+    async def wait_closed(self):
+        await self._handler_task
             
     def setup_udp(self, txt):
         '''
@@ -360,58 +381,53 @@ class KunaWS:
                 self.log.info('set UDP audio port to {}'.format(self.mapping[98]))
                 
     async def wait_for_channel_id(self):
-        '''
-        wait for channel id after websocket connects for the first time
-        '''
-        count = 0
-        while self.channel_id is None:
-            self.log.info("waiting for channel id")
-            await asyncio.sleep(1)
-            if (count:=count+1) % 10 == 0 and self.ws:
-                # Refresh token before retrying connection request
-                if self.kuna_instance:
-                    await self.kuna_instance.check_token()
-                    self.token = self.kuna_instance.token
-                await self.send_connect_req()
-            if count > 20:
-                self.log.warning('Aborting')
-                await self.close()
-                return False
-            if not self.ws:
-                self.log.info("ws closed, closing connection")
-                return False
-        return True
+        if self.channel_id is not None:
+            return True
+        ready = asyncio.create_task(self._channel_ready.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (ready, self._ws_connect_task),
+                timeout=CHANNEL_SETUP_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if ready in done and not self._exit and self.channel_id is not None:
+                return True
+            if not done:
+                self.log.warning('Timed out waiting for Kuna channel setup')
+            return False
+        finally:
+            ready.cancel()
+            await asyncio.gather(ready, return_exceptions=True)
             
     async def _handle(self):
-        '''
-        handle client connection
-        '''
-        while not self._exit:
-            if not self.ws:
-                asyncio.create_task(self.kuna_ws_connect())
+        try:
+            if self._exit:
+                return
+            # An accepted but idle RTSP client must not open a cloud session.
             data = await self.client.read(2048)
-            if not data:
-                self.log.info(f'Client: connection closed: {self.client.host}:{self.client.tcp_port}')
-                await self.close_client()
-                break
-
-            # Handle client connection
-            try:
+            if not data or self._exit:
+                return
+            # One upstream session per RTSP client. If it ends, close the RTSP
+            # connection so the consumer renegotiates a fresh session.
+            self._ws_connect_task = asyncio.create_task(self.kuna_ws_connect())
+            while not self._exit:
                 txt = data.decode('utf-8', errors='ignore')
-                self.log_printable('received request: {}'.format(txt))
                 self.setup_udp(txt)
                 if await self.wait_for_channel_id():
                     if self.ws:
                         frame = self.make_frame(self.channel_id, data)
-                        self.log.debug('sending to ws: {}'.format(binascii.hexlify(frame).decode('utf-8')))
                         await self.ws.send(frame)
                 else:
                     break
-            except Exception as e:
-                self.log.error(f"Client: error: can't handle request from {self.client.host}: {e}")
-                break
-        self.log.info('client handler closed')
-        await self.close()
+                data = await self.client.read(2048)
+                if not data:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.log.warning('RTSP session ended (%s)', type(e).__name__)
+        finally:
+            await self.close()
 
     def parse_rtp_header(self, pkt):
         pt = pkt[1] & 0x7F
@@ -517,18 +533,9 @@ class KunaWS:
             self.udp_sock.sendto(data, (self.client.host, target_port))
             
     async def send_to_tcp(self, data):
-        '''
-        send video and audio to client as tcp interleaved data
-        '''
-        hdr = self.parse_rtp_header(data[4:])
-        pt = hdr['pt']
-        if pt in self.mapping.keys():
-            self.log.debug("TCP RTP packet info: pt=%d seq=%d ts=%d ssrc=0x%08x -> %s (%s)", pt, hdr['seq'], hdr['ts'], hdr['ssrc'], self.client.host, 'video' if pt == 96 else 'audio' if pt == 98 else 'unknown', extra={'logonce':True})
-            #self.log.info('Raw Data')
-            #hexdump(data)
-            await self.client.write(data)
-        else:
-            self.log.debug("Unknown PT %d found; skipping packet", pt, extra={'logonce':True}) 
+        # This is a TCP byte stream, not necessarily one complete RTP packet.
+        # Preserve fragments, RTSP replies and interleaved RTCP without filtering.
+        await self.client.write(data)
         
     async def send_connect_req(self):
         '''
@@ -551,46 +558,42 @@ class KunaWS:
             + self.string_message(self.camera)  # Camera ID (porch)
             + self.string_message(self.token)  # Auth Token
         )
-        self.log.debug('sending connection request for camera:%s with token: %s', self.camera, self.token)
-        self.log.debug("Sending header `%s`", header)
+        self.log.debug('Sending connection request for camera: %s', self.camera)
         await self.ws.send(header)
         
     async def kuna_ws_connect(self):
-        # Refresh token if needed before connecting
-        if self.kuna_instance:
-            await self.kuna_instance.check_token()
-            self.token = self.kuna_instance.token
-        if not self.token:
-            self.log.error('Cannot connect to WebSocket: token is None')
-            return
-        ws_url = f"{self.ws_url}{self.token}"
-        self.log.info('Connecting to Kuna WS: %s', ws_url)
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        self.channel_id = None
-        async with websockets.connect(ws_url, ssl=ssl_context if ws_url.startswith("wss") else None) as self.ws:
-            self.log.info('Websocket Connected')
-            await self.ws.send(b'hello')
-            await self.send_connect_req()
-            while not self._exit:
-                try:
+        try:
+            if self._exit:
+                return
+            if self.kuna_instance:
+                await self.kuna_instance.check_token()
+                self.token = self.kuna_instance.token
+            if not self.token or self._exit:
+                return
+            ws_url = f"{self.ws_url}{self.token}"
+            self.log.info('Connecting to Kuna WebSocket')
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            async with websockets.connect(ws_url, ssl=ssl_context if ws_url.startswith("wss") else None, logger=WEBSOCKET_LOGGER) as self.ws:
+                if self._exit:
+                    return
+                self.log.info('WebSocket connected')
+                await self.ws.send(b'hello')
+                await self.send_connect_req()
+                while not self._exit:
                     msg = await self.ws.recv()
                     if isinstance(msg, bytes):
                         self.log.debug('received: %d bytes of binary data', len(msg))
                         packet_type, channel_id, channel_id2, size, data = self.decode_data(msg)
                         match packet_type:
                             case 4:     #TCP rdp/rdcp data
-                                printable = self.log_printable(data.decode('utf-8', errors='replace'))
-                                if self.client and self.channel_id:
-                                    if printable:
-                                        await self.client.write(data)
-                                    else:
-                                        await self.send_to_tcp(data)
+                                if self.client and self.channel_id is not None:
+                                    await self.send_to_tcp(data)
                                 else:
                                     self.log.info('skipping TCP rtp data')
                             case 6:     #UDP rdp Data
-                                if self.client and self.channel_id:
+                                if self.client and self.channel_id is not None:
                                     self.send_to_udp(data[38:]) #skip 38 byte header
                                 else:
                                     self.log.info('skipping UDP rtp data')
@@ -599,6 +602,7 @@ class KunaWS:
                                 if self.channel_id is None:
                                     self.log.warning('closing ws')
                                     break
+                                self._channel_ready.set()
                             case _:     #unknown packet type
                                 self.log_printable(data.decode('utf-8', errors='replace'))
                                     
@@ -606,18 +610,18 @@ class KunaWS:
                     elif isinstance(msg, str):
                         self.log.info(msg)
                         
-                except websockets.exceptions.ConnectionClosedOK:
-                    self.log.warning('Websocket closed normally')
-                    break
-                except asyncio.CancelledError:
-                    self.log.info('Websocket connection cancelled')
-                    break
-                except Exception as e:
-                    self.log.exception('WS error: {}'.format(e))
-                    break
-        self.ws = None
-        self.channel_id = None
-        self._ws_connect_task = None
+        except asyncio.CancelledError:
+            raise
+        except websockets.exceptions.ConnectionClosedOK:
+            self.log.info('WebSocket closed normally')
+        except Exception as e:
+            # Exception strings can contain the authenticated WebSocket URL.
+            self.log.warning('Kuna WebSocket session ended (%s)', type(e).__name__)
+        finally:
+            self.ws = None
+            self.channel_id = None
+            self._channel_ready.clear()
+            await self.close_client()
     
                     
 class rtsp_server:
@@ -658,9 +662,12 @@ class rtsp_server:
         try:
             if not self.writer.transport.is_closing():
                 self.writer.close()
-                await self.writer.wait_closed()
+                await asyncio.wait_for(self.writer.wait_closed(), timeout=CLIENT_CLOSE_TIMEOUT)
+        except asyncio.CancelledError:
+            self.writer.transport.abort()
+            raise
         except Exception:
-            pass
+            self.writer.transport.abort()
         
 def hexdump(data, length=16):
     """
@@ -766,4 +773,3 @@ if __name__ == "__main__":
     except Exception as e:
         logging.info('Caught main exception: %s', e)
         sys.exit(1)
-    

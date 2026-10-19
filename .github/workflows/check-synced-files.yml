@@ -17,8 +17,14 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Build
-      run: ./build-addon.sh
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+
+    - name: Test stream forwarding and session cleanup
+      run: uv run --no-project --python 3.12 --with-requirements requirements.txt python -m unittest discover -s tests -v
+
+    - name: Sync generated add-on files
+      run: ./build-addon.sh --sync-only
 
     - name: Check for git changes
       run: |

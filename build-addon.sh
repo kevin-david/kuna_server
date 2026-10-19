@@ -4,6 +4,11 @@
 
 set -e
 
+case "${1:-}" in
+    ""|--sync-only) ;;
+    *) echo "Usage: $0 [--sync-only]" >&2; exit 2 ;;
+esac
+
 ADDON_DIR="homeassistant-addon"
 
 echo "Building Home Assistant addon..."
@@ -24,6 +29,10 @@ echo "Copying files to addon directory with header comments..."
     echo ""
     cat requirements.txt
 } > "$ADDON_DIR/requirements.txt"
+
+if [ "${1:-}" = --sync-only ]; then
+    exit 0
+fi
 
 # Build the addon
 echo "Building Docker image..."
