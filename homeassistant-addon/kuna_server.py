@@ -19,6 +19,7 @@ import asyncio
 import aiohttp
 import signal
 import logging
+import traceback
 from logging.handlers import RotatingFileHandler
 import binascii
 import os
@@ -29,10 +30,9 @@ load_dotenv()
 
 __version__ = "0.1.5"
 
-# Preserve the existing setup budget while allowing the WebSocket handshake to
-# finish. A missing channel must eventually close the local RTSP connection.
-CHANNEL_SETUP_TIMEOUT = 21
-CLIENT_CLOSE_TIMEOUT = 5
+# Total time to obtain a channel, including the WebSocket handshake.
+CHANNEL_SETUP_TIMEOUT_SECONDS = 21
+CLIENT_CLOSE_TIMEOUT_SECONDS = 5
 
 # The library's DEBUG handshake logs include the authenticated request path.
 WEBSOCKET_LOGGER = logging.getLogger('kuna_server.websocket')
@@ -391,7 +391,7 @@ class KunaWS:
         try:
             done, _ = await asyncio.wait(
                 (ready, self._ws_connect_task),
-                timeout=CHANNEL_SETUP_TIMEOUT,
+                timeout=CHANNEL_SETUP_TIMEOUT_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if ready in done and not self._exit and self.channel_id is not None:
@@ -429,7 +429,12 @@ class KunaWS:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.log.warning('RTSP session ended (%s)', type(e).__name__)
+            # Log frame locations, without exception values or local variables.
+            locations = ' -> '.join(
+                f'{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}'
+                for frame in traceback.extract_tb(e.__traceback__)
+            )
+            self.log.warning('RTSP session ended (%s) at %s', type(e).__name__, locations)
         finally:
             await self.close()
 
@@ -576,9 +581,7 @@ class KunaWS:
                 return
             ws_url = f"{self.ws_url}{self.token}"
             self.log.info('Connecting to Kuna WebSocket')
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            ssl_context = ssl.create_default_context()
             async with websockets.connect(ws_url, ssl=ssl_context if ws_url.startswith("wss") else None, logger=WEBSOCKET_LOGGER) as self.ws:
                 if self._exit:
                     return
@@ -620,7 +623,11 @@ class KunaWS:
             self.log.info('WebSocket closed normally')
         except Exception as e:
             # Exception strings can contain the authenticated WebSocket URL.
-            self.log.warning('Kuna WebSocket session ended (%s)', type(e).__name__)
+            locations = ' -> '.join(
+                f'{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}'
+                for frame in traceback.extract_tb(e.__traceback__)
+            )
+            self.log.warning('Kuna WebSocket session ended (%s) at %s', type(e).__name__, locations)
         finally:
             self.ws = None
             self.channel_id = None
@@ -666,7 +673,7 @@ class rtsp_server:
         try:
             if not self.writer.transport.is_closing():
                 self.writer.close()
-                await asyncio.wait_for(self.writer.wait_closed(), timeout=CLIENT_CLOSE_TIMEOUT)
+                await asyncio.wait_for(self.writer.wait_closed(), timeout=CLIENT_CLOSE_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             self.writer.transport.abort()
             raise

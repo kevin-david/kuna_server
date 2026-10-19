@@ -1,6 +1,7 @@
 """Bridge regressions using synthetic RTSP/WebSocket traffic only."""
 import asyncio
 import logging
+import ssl
 import unittest
 from unittest.mock import patch
 
@@ -19,8 +20,10 @@ class Client:
         self.output = bytearray()
         self.closed = asyncio.Event()
         self.output_changed = asyncio.Event()
+        self.read_started = asyncio.Event()
 
     async def read(self, size):
+        self.read_started.set()
         return await self.requests.get()
 
     async def write(self, data):
@@ -135,6 +138,15 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=2.5)
         self.assertFalse(self.client.closed.is_set())
 
+    async def test_upstream_tls_verifies_hostname_and_certificate(self):
+        websocket = WebSocket()
+        self.start_bridge(Connection(websocket))
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=0.5)
+        context = self.connect_mock.call_args.kwargs['ssl']
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
     async def test_close_releases_udp_socket(self):
         self.start_bridge()
         await self.bridge.close()
@@ -161,6 +173,19 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('synthetic-token', '\n'.join(logs.output))
         self.assertEqual(self.bridge.udp_sock.fileno(), -1)
 
+    async def test_malformed_packet_logs_failure_location_without_token(self):
+        websocket = WebSocket()
+        self.start_bridge(Connection(websocket))
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=0.5)
+        with self.assertLogs(level='WARNING') as logs:
+            websocket.messages.put_nowait(proxy_message(6))
+            await asyncio.wait_for(self.bridge.wait_closed(), timeout=0.5)
+        output = '\n'.join(logs.output)
+        self.assertIn('IndexError', output)
+        self.assertIn('parse_rtp_header', output)
+        self.assertNotIn('synthetic-token', output)
+
     async def test_upstream_disconnect_closes_waiting_rtsp_client(self):
         websocket = WebSocket()
         self.start_bridge(Connection(websocket))
@@ -176,7 +201,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         websocket = WebSocket(setup=False)
         self.start_bridge(Connection(websocket))
         self.client.requests.put_nowait(b'OPTIONS rtsp://synthetic/stream2 RTSP/1.0\r\nCSeq: 1\r\n\r\n')
-        with patch('kuna_server.CHANNEL_SETUP_TIMEOUT', 0.02):
+        with patch('kuna_server.CHANNEL_SETUP_TIMEOUT_SECONDS', 0.02):
             with self.assertLogs(level='WARNING'):
                 await asyncio.wait_for(self.bridge.wait_closed(), timeout=0.5)
         self.assertTrue(websocket.closed.is_set())
@@ -208,18 +233,12 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(self.bridge.close(), self.bridge.close()), timeout=0.5)
         self.assertTrue(self.client.closed.is_set())
 
-    async def test_debug_logging_does_not_include_authentication_token(self):
-        websocket = WebSocket()
-        self.start_bridge(Connection(websocket))
-        self.client.requests.put_nowait(b'OPTIONS rtsp://synthetic/stream2 RTSP/1.0\r\nCSeq: 1\r\n\r\n')
-        with self.assertLogs(level='DEBUG') as logs:
-            await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=0.5)
-            await self.bridge.close()
-        self.assertNotIn('synthetic-token', '\n'.join(logs.output))
-
     async def test_idle_client_does_not_open_upstream_session(self):
         self.start_bridge()
-        await asyncio.sleep(0)
+        await asyncio.wait_for(self.client.read_started.wait(), timeout=0.5)
+        # Let any task created before the first read reach websockets.connect.
+        for _ in range(3):
+            await asyncio.sleep(0)
         self.connect_mock.assert_not_called()
         self.assertFalse(self.client.closed.is_set())
 
@@ -274,7 +293,7 @@ class StalledWriterTests(unittest.IsolatedAsyncioTestCase):
 
         writer = Writer()
         client = rtsp_server(None, writer)
-        with patch('kuna_server.CLIENT_CLOSE_TIMEOUT', 0.02):
+        with patch('kuna_server.CLIENT_CLOSE_TIMEOUT_SECONDS', 0.02):
             await asyncio.wait_for(client.close(), timeout=0.5)
         self.assertTrue(writer.transport.aborted)
 

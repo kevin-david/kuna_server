@@ -92,7 +92,7 @@ uv run --no-project --python 3.12 --with-requirements requirements.txt python -m
 git diff --exit-code -- homeassistant-addon/kuna_server.py homeassistant-addon/requirements.txt
 ```
 
-TCP forwarding preserves the bytes received from the Kuna proxy, including fragmented media records and RTCP control traffic. Each RTSP client has one upstream WebSocket session. Setup has a 21-second timeout. A failed upstream session closes the RTSP connection so the consumer can start a fresh session. Closing a client cancels its connection task and releases its UDP socket.
+If the Kuna session drops or setup times out, the RTSP connection closes. Configure the consumer (for example, Frigate) to reconnect.
 
 The add-on uses generated copies of the root Python source and requirements. Run `./build-addon.sh --sync-only` after edits, or `./build-addon.sh` to sync and build the image. Pull request builds do not publish images.
 

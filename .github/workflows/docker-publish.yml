@@ -35,13 +35,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set tag
+      if: github.event_name != 'pull_request'
       id: tag
       run: |
-        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-          echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
-        else
-          echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-        fi
+        echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
     - name: Build addon image
       run: ./build-addon.sh
