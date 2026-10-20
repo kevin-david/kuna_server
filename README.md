@@ -80,3 +80,20 @@ But YMMV.
 Let me know if there are any bugs by posting in issues.
 
 If you like this repo [buy me a coffee](https://paypal.me/NWaterton)
+
+
+## Development checks
+
+Run the bridge regression tests with synthetic traffic. They do not connect to cameras or the Kuna service.
+
+```bash
+uv run --no-project --python 3.12 --with-requirements requirements.txt python -m unittest discover -s tests -v
+./build-addon.sh --sync-only
+git diff --exit-code -- homeassistant-addon/kuna_server.py homeassistant-addon/requirements.txt
+```
+
+If the Kuna session drops or setup times out, the RTSP connection closes. Configure the consumer (for example, Frigate) to reconnect.
+
+The add-on uses generated copies of the root Python source and requirements. Run `./build-addon.sh --sync-only` after edits, or `./build-addon.sh` to sync and build the image. Pull request builds do not publish images.
+
+After deploying, check each camera's frame rate and watch for repeated disconnects. A synthetic replay cannot establish long-term reliability against the Kuna service.
