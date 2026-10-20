@@ -49,16 +49,19 @@ def proxy_message(kind, payload=b'', channel=7):
 
 
 class WebSocket:
-    def __init__(self, setup=True, channel=7):
+    def __init__(self, setup=True, channel=7, setup_after=1):
         self.messages = asyncio.Queue()
         self.request_forwarded = asyncio.Event()
         self.closed = asyncio.Event()
         self.setup = setup
         self.channel = channel
+        self.setup_after = setup_after
+        self.setup_requests = 0
 
     async def send(self, data):
         if data[:4] == (7).to_bytes(4, 'big'):
-            if self.setup:
+            self.setup_requests += 1
+            if self.setup and self.setup_requests >= self.setup_after:
                 setup = b''.join(n.to_bytes(4, 'big') for n in (8, 0, 0, 0, 0, self.channel, 0, 0))
                 self.messages.put_nowait(setup)
         elif data[:4] == (4).to_bytes(4, 'big'):
@@ -206,6 +209,89 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(self.bridge.wait_closed(), timeout=0.5)
         self.assertTrue(websocket.closed.is_set())
         self.assertTrue(self.client.closed.is_set())
+
+    async def test_channel_setup_retries_twice_on_the_same_websocket(self):
+        websocket = WebSocket(setup_after=3)
+        self.start_bridge(Connection(websocket))
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        with patch('kuna_server.CHANNEL_SETUP_TIMEOUT_SECONDS', 0.6):
+            with patch('kuna_server.CHANNEL_SETUP_RETRY_INTERVAL_SECONDS', 0.1):
+                await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=1)
+        self.assertEqual(websocket.setup_requests, 3)
+        self.connect_mock.assert_called_once()
+        self.assertFalse(self.client.closed.is_set())
+
+    async def test_retries_stop_at_the_original_setup_deadline(self):
+        websocket = WebSocket(setup=False)
+        self.start_bridge(Connection(websocket))
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        with patch('kuna_server.CHANNEL_SETUP_TIMEOUT_SECONDS', 0.15):
+            with patch('kuna_server.CHANNEL_SETUP_RETRY_INTERVAL_SECONDS', 0.05):
+                with self.assertLogs(level='WARNING'):
+                    await asyncio.wait_for(self.bridge.wait_closed(), timeout=0.4)
+        self.assertEqual(websocket.setup_requests, 3)
+        self.assertTrue(self.client.closed.is_set())
+        self.assertTrue(websocket.closed.is_set())
+
+    async def test_successful_setup_does_not_keep_retrying(self):
+        websocket = WebSocket()
+        self.start_bridge(Connection(websocket))
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        with patch('kuna_server.CHANNEL_SETUP_RETRY_INTERVAL_SECONDS', 0.02):
+            await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=0.5)
+            await asyncio.sleep(0.06)
+        self.assertEqual(websocket.setup_requests, 1)
+
+    async def test_setup_reply_during_token_refresh_prevents_duplicate_request(self):
+        websocket = WebSocket(setup=False)
+
+        class TokenProvider:
+            token = 'synthetic-token'
+            checks = 0
+
+            async def check_token(self):
+                self.checks += 1
+                if self.checks == 3:  # retry after connect and first setup request
+                    websocket.messages.put_nowait(
+                        b''.join(n.to_bytes(4, 'big') for n in (8, 0, 0, 0, 0, 7, 0, 0))
+                    )
+                    for _ in range(3):
+                        await asyncio.sleep(0)
+
+        self.start_bridge(Connection(websocket))
+        self.bridge.kuna_instance = TokenProvider()
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        with patch('kuna_server.CHANNEL_SETUP_RETRY_INTERVAL_SECONDS', 0.02):
+            await asyncio.wait_for(websocket.request_forwarded.wait(), timeout=0.5)
+        self.assertEqual(websocket.setup_requests, 1)
+        self.assertEqual(self.bridge.kuna_instance.checks, 3)
+
+    async def test_retry_token_refresh_cannot_extend_setup_deadline(self):
+        websocket = WebSocket(setup=False)
+
+        class TokenProvider:
+            token = 'synthetic-token'
+            checks = 0
+            retry_cancelled = False
+
+            async def check_token(self):
+                self.checks += 1
+                if self.checks == 3:
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        self.retry_cancelled = True
+
+        self.start_bridge(Connection(websocket))
+        provider = self.bridge.kuna_instance = TokenProvider()
+        self.client.requests.put_nowait(b'OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n')
+        with patch('kuna_server.CHANNEL_SETUP_TIMEOUT_SECONDS', 0.12):
+            with patch('kuna_server.CHANNEL_SETUP_RETRY_INTERVAL_SECONDS', 0.04):
+                with self.assertLogs(level='WARNING'):
+                    await asyncio.wait_for(self.bridge.wait_closed(), timeout=0.5)
+        self.assertTrue(provider.retry_cancelled)
+        self.assertTrue(self.client.closed.is_set())
+        self.assertTrue(websocket.closed.is_set())
 
     async def test_proxy_receive_path_preserves_bytes_and_channel_zero(self):
         websocket = WebSocket(channel=0)

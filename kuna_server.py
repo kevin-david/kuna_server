@@ -28,6 +28,7 @@ __version__ = "0.1.5"
 
 # Total time to obtain a channel, including the WebSocket handshake.
 CHANNEL_SETUP_TIMEOUT_SECONDS = 21
+CHANNEL_SETUP_RETRY_INTERVAL_SECONDS = 10
 CLIENT_CLOSE_TIMEOUT_SECONDS = 5
 
 # The library's DEBUG handshake logs include the authenticated request path.
@@ -384,16 +385,36 @@ class KunaWS:
         if self.channel_id is not None:
             return True
         ready = asyncio.create_task(self._channel_ready.wait())
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CHANNEL_SETUP_TIMEOUT_SECONDS
+        next_retry = loop.time() + CHANNEL_SETUP_RETRY_INTERVAL_SECONDS
         try:
-            done, _ = await asyncio.wait(
-                (ready, self._ws_connect_task),
-                timeout=CHANNEL_SETUP_TIMEOUT_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if ready in done and not self._exit and self.channel_id is not None:
-                return True
-            if not done:
-                self.log.warning('Timed out waiting for Kuna channel setup')
+            while not self._exit:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                done, _ = await asyncio.wait(
+                    (ready, self._ws_connect_task),
+                    timeout=max(0, min(deadline, next_retry) - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if ready in done and not self._exit and self.channel_id is not None:
+                    return True
+                if self._ws_connect_task in done:
+                    return False
+                if loop.time() >= deadline:
+                    break
+                if loop.time() >= next_retry:
+                    next_retry += CHANNEL_SETUP_RETRY_INTERVAL_SECONDS
+                    if self.ws is not None:
+                        # Token refresh and sending must fit the original deadline.
+                        try:
+                            await asyncio.wait_for(
+                                self.send_connect_req(), timeout=deadline - loop.time()
+                            )
+                        except TimeoutError:
+                            break
+            self.log.warning('Timed out waiting for Kuna channel setup')
             return False
         finally:
             ready.cancel()
@@ -546,7 +567,6 @@ class KunaWS:
         '''
         send connection request to ws
         '''
-        self.channel_id = None
         if not self.ws:
             self.log.error('no ws')
             return
@@ -554,6 +574,10 @@ class KunaWS:
         if self.kuna_instance:
             await self.kuna_instance.check_token()
             self.token = self.kuna_instance.token
+        # A setup reply can arrive while token refresh yields. Do not send a
+        # duplicate request or clear an established channel in that case.
+        if self._exit or self.channel_id is not None or self.ws is None:
+            return
         if not self.token:
             self.log.error('Cannot send connect request: token is None')
             return
