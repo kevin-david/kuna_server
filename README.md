@@ -124,3 +124,20 @@ Evidence files contain camera metadata and stay outside Git. A successful
 WebSocket upgrade or synthetic test does not establish camera-stream stability;
 judge the trial by fresh input and processing rates and errors over its full
 measurement window.
+
+### 2026-10-29 result
+
+A ten-minute trial on the basement camera did not restore its stream. After
+the 60-second warmup, all 40 distinct Frigate snapshots reported 0 incoming fps.
+The video endpoint produced no TLS verification failures for that camera, but
+Kuna returned 35 cloud-side connection refusals during the measured window.
+The other two cameras retained the server endpoint. Their new connections
+encountered 11 TLS failures in total after the shared bridge restart, then
+returned to roughly 5 fps. This prevents treating the controls as continuously
+healthy throughout the trial.
+
+The original add-on source was restored with SHA-256
+`f8c2b9e8b8349d99f6ab0a569f4b002669783d72c76ab8ac8a02d898c72a8b52`.
+The image ID and camera-to-port mapping stayed the same. Frigate was not
+restarted. Changing the WebSocket hostname alone did not fix the basement
+camera's streaming failure.
