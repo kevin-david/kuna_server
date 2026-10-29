@@ -97,3 +97,30 @@ If the Kuna session drops or setup times out, the RTSP connection closes. Config
 The add-on uses generated copies of the root Python source and requirements. Run `./build-addon.sh --sync-only` after edits, or `./build-addon.sh` to sync and build the image. Pull request builds do not publish images.
 
 After deploying, check each camera's frame rate and watch for repeated disconnects. A synthetic replay cannot establish long-term reliability against the Kuna service.
+
+## Live endpoint trial
+
+`scripts/endpoint_trial.py` tests `video.kunasystems.com` on one RTSP listener
+while the other cameras retain `server.kunasystems.com`. It uses the existing
+Frigate consumer. It checks the deployed source hash and image, saves the source
+in the add-on's private data directory, and restarts the bridge to apply the
+temporary camera-specific override. The command records frame-rate samples and
+aggregated bridge errors, then restores the exact original source and restarts
+the bridge. It verifies the camera-to-port mapping after each restart.
+
+The command requires Proxmox guest-agent access through passwordless sudo and
+must run on the Frigate host. The add-on restart briefly interrupts all cameras
+served by that bridge; the Frigate container remains running. Normal errors,
+Ctrl-C, SIGTERM and SIGHUP enter the restore path. Keep the command running until
+it reports restoration; it has no separate rollback service for controller loss.
+
+```bash
+uv run --no-project python scripts/endpoint_trial.py \
+  --vmid 101 --port 4555 --seconds 600 \
+  --output /tmp/kuna-endpoint-trial-2026-10-29.json
+```
+
+Evidence files contain camera metadata and stay outside Git. A successful
+WebSocket upgrade or synthetic test does not establish camera-stream stability;
+judge the trial by fresh input and processing rates and errors over its full
+measurement window.
